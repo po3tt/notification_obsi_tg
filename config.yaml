@@ -1,0 +1,7 @@
+bot_token: 56456456456:hfdhdfghfdghfghdfghdfghdfghdfgh
+#указываем путь к хранилищу. Пример \dir1\dir2\dir3
+directory: "C:\\Users\\Professional\\Obsidian"
+files:
+  - "Планы.md"
+default_time: "09:00"
+user_chat_id: "00000000"
