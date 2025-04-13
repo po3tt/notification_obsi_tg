@@ -20,10 +20,15 @@ def load_config():
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
-        required_keys = ['bot_token', 'directory', 'files', 'default_time', 'user_chat_id']
+        required_keys = ['bot_token', 'directory', 'files', 'default_time', 'user_chat_id', 'check_interval']
         if not config or not all(key in config for key in required_keys):
             missing = [k for k in required_keys if k not in config]
             logger.error(f"Отсутствуют ключи в конфиге: {missing}")
+            return None
+            
+        # Проверка корректности интервала
+        if not isinstance(config['check_interval'], int) or config['check_interval'] < 1:
+            logger.error("check_interval должен быть целым числом (секунды) и не меньше 1")
             return None
             
         return config
@@ -125,50 +130,86 @@ async def check_files(config):
     
     return results
 
-async def check_and_notify():
+
+async def process_tasks_for_time(check_time: datetime):
+    """Обработка задач для конкретного времени проверки"""
     tasks = await check_files(config)
-    now = datetime.now()
-    current_date = now.date()
-    current_time = now.time().replace(second=0, microsecond=0)
-
-
+    current_date = check_time.date()
+    current_time = check_time.time().replace(second=0, microsecond=0)
+    
     for task in tasks:
         data = task['data']
-        task = data["task"]
-        time = data["time"]
+        task_text = data["task"]
+        time_str = data["time"]
         predate = data["dates"].get("⏳")
         postdate = data["dates"].get("📅")
-        task_time = datetime.strptime(time, '%H:%M').time().replace(second=0, microsecond=0)
-        if predate:
-            predate = datetime.strptime(predate, '%Y-%m-%d').date()
-        if postdate:
-            postdate = datetime.strptime(postdate, '%Y-%m-%d').date() 
 
+        try:
+            task_time = datetime.strptime(time_str, '%H:%M').time()
+            task_time = task_time.replace(second=0, microsecond=0)
+        except ValueError:
+            continue
 
+        # Преобразование дат
+        predate_obj = datetime.strptime(predate, '%Y-%m-%d').date() if predate else None
+        postdate_obj = datetime.strptime(postdate, '%Y-%m-%d').date() if postdate else None
+
+        # Проверка условий для конкретного времени
         if task_time == current_time:
-            # 1. Предварительное напоминание (⏳)
-            if predate == current_date:
-                message = f"⏳ Напоминаю {postdate} у Вас запланировано: \n\n {task}"
+            if predate_obj == current_date:
+                message = f"⏳ [Восстановлено] Напоминаю {postdate} у Вас запланировано: \n\n {task_text}"
                 await bot.send_message(config['user_chat_id'], message)
-                logger.info(f"Предварительное напоминание: {message}")
             
-            # 2. Основное напоминание (📅)
-            elif postdate == current_date:
-                message = f"📅 Напоминаю: \n\n {task}"
+            if postdate_obj == current_date:
+                message = f"📅 [Восстановлено] Напоминаю: \n\n {task_text}"
                 await bot.send_message(config['user_chat_id'], message)
-                logger.info(f"Основное напоминание: {message}")
             
-            # 3. Основное напоминание по времени   
-            elif postdate==None and predate==None:
-                message = f"⏰ Напоминаю: \n\n {task}"
+            if not predate and not postdate:
+                message = f"⏰ [Восстановлено] Напоминаю: \n\n {task_text}"
                 await bot.send_message(config['user_chat_id'], message)
-                logger.info(f"Основное напоминание: {message}")
 
+async def check_and_notify():
+    """Основная функция проверки с восстановлением пропущенных интервалов"""
+    now = datetime.now()
+    
+    # Инициализация времени последней проверки
+    if not hasattr(check_and_notify, 'last_check_time'):
+        check_and_notify.last_check_time = now - timedelta(seconds=config['check_interval'])
+        logger.info(f"Инициализация last_check_time: {check_and_notify.last_check_time}")
+    
+    # Расчет пропущенных интервалов
+    time_diff = (now - check_and_notify.last_check_time).total_seconds()
+    
+    if time_diff > config['check_interval'] * 1.5:
+        missed_checks = int(time_diff // config['check_interval'])
+        logger.warning(f"Пропущено проверок: {missed_checks}, восстановление...")
+        
+        # Обработка пропущенных периодов
+        for i in range(1, missed_checks + 1):
+            check_time = check_and_notify.last_check_time + timedelta(
+                seconds=config['check_interval'] * i
+            )
+            logger.debug(f"Проверка за {check_time}")
+            await process_tasks_for_time(check_time)
+    
+    # Обработка текущих задач
+    logger.info(f"Обычная проверка в {now}")
+    await process_tasks_for_time(now)
+    
+    # Обновление времени последней проверки
+    check_and_notify.last_check_time = now
 
 async def scheduler():
+    """Модифицированный планировщик с обработкой ошибок"""
     while True:
-        await check_and_notify()
-        await asyncio.sleep(60)
+        try:
+            await check_and_notify()
+            await asyncio.sleep(config['check_interval'])
+        except Exception as e:
+            logger.error(f"Ошибка в планировщике: {str(e)}")
+            await asyncio.sleep(10)  # Пауза перед повторной попыткой
+
+
 
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message):
