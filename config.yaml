@@ -5,3 +5,4 @@ files:
   - "Планы.md"
 default_time: "09:00"
 user_chat_id: "00000000"
+check_interval: 60
