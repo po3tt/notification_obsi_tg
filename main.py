@@ -30,8 +30,8 @@ def load_config():
             logger.error("check_interval должен быть целым числом (секунды) и не меньше 1")
             return None
 
-        config.setdefault('files', [])  # если не указано
-        config.setdefault('show_path_in_message', True)  # новый флаг
+        config.setdefault('files', []) 
+        config.setdefault('show_path_in_message', True) 
 
         return config
     except Exception as e:
@@ -116,8 +116,8 @@ async def check_files(config):
     directory = Path(config['directory'])
     files = config.get('files', [])
 
-    if not files:  # Если список файлов пуст
-        files_to_scan = list(directory.rglob("*.md"))  # Все md-файлы в подпапках
+    if not files:  
+        files_to_scan = list(directory.rglob("*.md")) 
     else:
         files_to_scan = [directory / f for f in files]
 
@@ -132,7 +132,7 @@ async def check_files(config):
                     task_data = parse_task_line(line, config['default_time'])
                     if task_data:
                         results.append({
-                            'file': filepath,  # полный путь
+                            'file': filepath, 
                             'line': line_num,
                             'data': task_data
                         })
@@ -178,7 +178,7 @@ async def process_tasks_for_time(check_time: datetime):
                     await bot.send_message(
                         chat_id=config['user_chat_id'],
                         text=message,
-                        parse_mode=ParseMode.HTML,  # заменили MarkdownV2 на HTML
+                        parse_mode=ParseMode.HTML,
                         disable_web_page_preview=True
                     )
                     logger.info(f"Отправлено сообщение: {message}")
