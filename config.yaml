@@ -1,8 +1,19 @@
-bot_token: 56456456456:hfdhdfghfdghfghdfghdfghdfghdfgh
-#указываем путь к хранилищу. Пример \dir1\dir2\dir3
-directory: "C:\\Users\\Professional\\Obsidian"
-files:
-  - "Планы.md"
+bot_token: 45645645646:dfgdfgdfgdfgdfgdfgdgy_fgdfgdfgdfg
+
+#указываем путь к хранилищу. Пример \\dir1\\dir2\\dir3
+directory: "\\Professional\\Obsidian"
+
+#указываем через запятую ["1.md", "2.md"], если оставим пустым то будет проверяться вся дирректория указаная выше
+files: []
+
+#если задача без времени, то она будет напоминаться в указанное время"1. Повседневная жизнь\\Планы.md"
 default_time: "09:00"
-user_chat_id: "00000000"
+
+#telegram id
+user_chat_id: "34234234"
+
+#интервал проверки задач в секундах
 check_interval: 60
+
+#нужно ли указывать путь у задачам (из каких файлов эти задачи)
+show_path_in_message: true
