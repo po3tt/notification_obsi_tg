@@ -7,7 +7,7 @@ from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 import asyncio
 import logging
-
+from aiogram.enums import ParseMode
 
 
 logging.basicConfig(level=logging.INFO)
@@ -20,27 +20,33 @@ def load_config():
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
-        required_keys = ['bot_token', 'directory', 'files', 'default_time', 'user_chat_id', 'check_interval']
-        if not config or not all(key in config for key in required_keys):
-            missing = [k for k in required_keys if k not in config]
+        required_keys = ['bot_token', 'directory', 'default_time', 'user_chat_id', 'check_interval']
+        missing = [k for k in required_keys if k not in config]
+        if missing:
             logger.error(f"Отсутствуют ключи в конфиге: {missing}")
             return None
-            
-        # Проверка корректности интервала
+
         if not isinstance(config['check_interval'], int) or config['check_interval'] < 1:
             logger.error("check_interval должен быть целым числом (секунды) и не меньше 1")
             return None
-            
+
+        config.setdefault('files', [])  # если не указано
+        config.setdefault('show_path_in_message', True)  # новый флаг
+
         return config
     except Exception as e:
         logger.error(f"Ошибка конфига: {str(e)}")
         return None
 
+
 config = load_config()
 if not config:
     exit(1)
 
-bot = Bot(token=config['bot_token'], default=DefaultBotProperties(parse_mode='HTML'))
+bot = Bot(
+    token=config['bot_token'], 
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+
 dp = Dispatcher()
 
 def parse_task_line(line, default_time):
@@ -108,65 +114,78 @@ def parse_task_line(line, default_time):
 async def check_files(config):
     results = []
     directory = Path(config['directory'])
-    
-    for filename in config['files']:
-        filepath = directory / filename
+    files = config.get('files', [])
+
+    if not files:  # Если список файлов пуст
+        files_to_scan = list(directory.rglob("*.md"))  # Все md-файлы в подпапках
+    else:
+        files_to_scan = [directory / f for f in files]
+
+    for filepath in files_to_scan:
         if not filepath.exists():
             logger.warning(f"Файл не найден: {filepath}")
             continue
-            
+
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 for line_num, line in enumerate(f, 1):
                     task_data = parse_task_line(line, config['default_time'])
                     if task_data:
                         results.append({
-                            'file': filename,
+                            'file': filepath,  # полный путь
                             'line': line_num,
                             'data': task_data
                         })
         except Exception as e:
-            logger.error(f"Ошибка чтения файла: {str(e)}")
-    
+            logger.error(f"Ошибка чтения файла {filepath}: {str(e)}")
+
     return results
 
-
 async def process_tasks_for_time(check_time: datetime):
-    """Обработка задач для конкретного времени проверки"""
     tasks = await check_files(config)
     current_date = check_time.date()
     current_time = check_time.time().replace(second=0, microsecond=0)
     
     for task in tasks:
-        data = task['data']
-        task_text = data["task"]
-        time_str = data["time"]
-        predate = data["dates"].get("⏳")
-        postdate = data["dates"].get("📅")
-
         try:
+            data = task['data']
+            task_text = data["task"]
+            time_str = data["time"]
+            predate = data["dates"].get("⏳")
+            postdate = data["dates"].get("📅")
+            
             task_time = datetime.strptime(time_str, '%H:%M').time()
             task_time = task_time.replace(second=0, microsecond=0)
-        except ValueError:
-            continue
 
-        # Преобразование дат
-        predate_obj = datetime.strptime(predate, '%Y-%m-%d').date() if predate else None
-        postdate_obj = datetime.strptime(postdate, '%Y-%m-%d').date() if postdate else None
+            if task_time == current_time:
+                message = None
+                
+                if predate and datetime.strptime(predate, '%Y-%m-%d').date() == current_date:
+                    message = f"⏳ Напоминаю {postdate} у вас запланировано:\n\n - {task_text}"
+                
+                elif postdate and datetime.strptime(postdate, '%Y-%m-%d').date() == current_date:
+                    message = f"📅 Напоминание:\n\n - {task_text}"
+                
+                elif not predate and not postdate:
+                    message = f"⏰ Напоминание:\n\n - {task_text}"
+                
+                if message:
+                    if config.get('show_path_in_message', True):
+                        filename = task['file'].relative_to(config['directory'])
+                        safe_filename = str(filename).replace(".md", "") 
+                        message += f"\n📁 Файл: {safe_filename}"
+                                            
+                    await bot.send_message(
+                        chat_id=config['user_chat_id'],
+                        text=message,
+                        parse_mode=ParseMode.HTML,  # заменили MarkdownV2 на HTML
+                        disable_web_page_preview=True
+                    )
+                    logger.info(f"Отправлено сообщение: {message}")
 
-        # Проверка условий для конкретного времени
-        if task_time == current_time:
-            if predate_obj == current_date:
-                message = f"⏳ [Восстановлено] Напоминаю {postdate} у Вас запланировано: \n\n {task_text}"
-                await bot.send_message(config['user_chat_id'], message)
-            
-            if postdate_obj == current_date:
-                message = f"📅 [Восстановлено] Напоминаю: \n\n {task_text}"
-                await bot.send_message(config['user_chat_id'], message)
-            
-            if not predate and not postdate:
-                message = f"⏰ [Восстановлено] Напоминаю: \n\n {task_text}"
-                await bot.send_message(config['user_chat_id'], message)
+        except Exception as e:
+            logger.error(f"Ошибка обработки задачи: {str(e)}")
+
 
 async def check_and_notify():
     """Основная функция проверки с восстановлением пропущенных интервалов"""
@@ -200,44 +219,104 @@ async def check_and_notify():
     check_and_notify.last_check_time = now
 
 async def scheduler():
-    """Модифицированный планировщик с обработкой ошибок"""
+    """Планировщик с синхронизацией по времени (например, каждую минуту в xx:xx:01)"""
     while True:
         try:
+            now = datetime.now()
+            next_check = (
+                now.replace(second=1, microsecond=0) + 
+                timedelta(minutes=1) if now.second >= 1 else
+                now.replace(second=1, microsecond=0)
+            )
+
             await check_and_notify()
-            await asyncio.sleep(config['check_interval'])
+            
+            sleep_duration = (next_check - datetime.now()).total_seconds()
+            logger.info(f"Следующая проверка через {sleep_duration:.2f} секунд (в {next_check.time()})")
+            await asyncio.sleep(sleep_duration)
+
         except Exception as e:
             logger.error(f"Ошибка в планировщике: {str(e)}")
-            await asyncio.sleep(10)  # Пауза перед повторной попыткой
+            await asyncio.sleep(10)
 
 
 
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message):
+    keyboard = types.ReplyKeyboardMarkup(
+        keyboard=[
+            [types.KeyboardButton(text="🔔Задачи на сегодня")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    
     await message.reply(
         "🔔 Бот для напоминаний запущен!\n"
-        "Уведомления будут приходить в настроенный чат.\n"
-        "Используйте /check для просмотра задач"
+        "Уведомления будут приходить автоматически.\n"
+        "Нажмите кнопку ниже для просмотра задач на сегодня",
+        reply_markup=keyboard
     )
 
-@dp.message(Command("check"))
-async def check_tasks(message: types.Message):
+@dp.message(Command("scheduled"))
+@dp.message(lambda message: message.text == "🔔Задачи на сегодня")
+async def show_scheduled_tasks(message: types.Message):
     tasks = await check_files(config)
+    today = datetime.now().date()
+    keyboard = types.ReplyKeyboardMarkup(
+        keyboard=[
+            [types.KeyboardButton(text="🔔Задачи на сегодня")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    response = ["📅 <b>Задачи на сегодня:</b>\n"]
     
-    if not tasks:
-        await message.reply("❌ Активных задач не найдено")
-        return
-    
-    response = ["📋 Список задач:\n"]
     for task in tasks:
-        task_info = task['data']
-        dates = '\n'.join([f"{emoji} {date}" for emoji, date in task_info['dates'].items()]) or ""
+        data = task['data']
+        dates = data['dates']
+        time_str = data['time']
         
-        response.append(
-            f" {task_info['task']} в {task_info['time']} {dates}\n"
-            f"-------"
-        )
+        # Проверяем совпадение дат
+        is_today = False
+        if '⏳' in dates:
+            remind_date = datetime.strptime(dates['⏳'], '%Y-%m-%d').date()
+            if remind_date == today:
+                is_today = True
+        if '📅' in dates:
+            event_date = datetime.strptime(dates['📅'], '%Y-%m-%d').date()
+            if event_date == today:
+                is_today = True
+        if not dates:
+            try:
+                task_time = datetime.strptime(time_str, '%H:%M').time()
+                if task_time >= datetime.now().time():
+                    is_today = True
+            except:
+                pass
+        
+        if is_today:
+            file_info = ""
+            if config.get('show_path_in_message', True):
+                filename = task['file'].relative_to(config['directory'])
+                safe_filename = str(filename).replace(".md", "") 
+                file_info += f"\n📁 Файл: {safe_filename} \n"
+
+            task_info = (
+                f"⏰ {time_str} - {data['task']}\n"
+                f"{file_info}"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            response.append(task_info)
     
-    await message.reply('\n'.join(response))
+    if len(response) == 1:
+        response.append("\n✅ На сегодня задач нет!")
+    
+    await message.reply(
+        '\n'.join(response),
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard
+    )
 
 async def main():
     asyncio.create_task(scheduler())
